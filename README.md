@@ -116,3 +116,23 @@ npm run ui-check   # Playwright 冒烟测试（需要先 npm run dev）
 - 20×20 级别的自定义盘面「逻辑解题 / 显示解」可能触及求解预算，状态栏会明确提示超时；
 - 键盘光标按「候选边中点」在上下左右半平面内找最近的边移动，属于便捷操作，不是严格网格步进；
 - 音效为 Web Audio 合成音（无外部音频文件）。
+
+## 图片导入
+
+`npm run import-image -- <图片路径>` 可以自动识别珍珠（Masyu）题图里的圆圈阵列：按填充率区分白圈/黑圈，用最小二乘拟合格点后生成棋盘编码。
+
+```bash
+npm run import-image -- 题图.png --dry                 # 只识别与预览
+npm run import-image -- 题图.png --name "我的珍珠" --append   # 追加到题库
+npm run import-image -- 题图.png --append --verify      # 额外做唯一解检查（大图会超时警告）
+```
+
+| 参数 | 说明 |
+|------|------|
+| `--size N` / `--width W --height H` | 覆盖棋盘尺寸（圆圈不够贴边时用） |
+| `--map 0=w,1=b` | 交换两类圆圈的映射（0=空心环、1=实心盘） |
+| `--name` / `--id` | 题库名字 / id |
+| `--append` | 写入 `src/game/imported-puzzles.ts` |
+| `--verify` / `--dry` | 唯一解检查 / 只识别 |
+
+说明：导入题写到 `src/game/imported-puzzles.ts`（`npm run gen` 不会覆盖）；最大边长上限已放宽到 40 以容纳每月大题。

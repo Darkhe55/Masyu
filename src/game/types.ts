@@ -12,8 +12,8 @@
 
 import type { GameState, Puzzle, ValidationResult } from '../core/types.ts'
 
-/** 自定义题板最大边长 */
-export const MAX_CUSTOM_SIZE = 20
+/** 题板最大边长（识图导入的巨型题也会用到，所以和内置题上限一致放宽） */
+export const MAX_CUSTOM_SIZE = 40
 
 export const EDGE_UNKNOWN = 0
 export const EDGE_ON = 1

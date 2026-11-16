@@ -4,6 +4,7 @@
 
 import type { GameState, Puzzle } from '../core/types.ts'
 import { RAW_PUZZLES, type RawPuzzle } from './puzzles-data.ts'
+import { IMPORTED_PUZZLES } from './imported-puzzles.ts'
 import {
   asMasyuPuzzle,
   CIRCLE_BLACK,
@@ -35,13 +36,16 @@ export function decodePuzzle(raw: RawPuzzle): MasyuPuzzle | null {
   }
 }
 
-export const builtinPuzzles: Puzzle[] = (RAW_PUZZLES as RawPuzzle[])
-  .map(decodePuzzle)
-  .filter((p): p is MasyuPuzzle => p !== null)
+/** 内置题库 + 识图导入题库（imported-puzzles.ts 由 scripts/import-image.mjs 追加） */
+const ALL_RAW: RawPuzzle[] = [...RAW_PUZZLES, ...IMPORTED_PUZZLES]
+
+export const builtinPuzzles: Puzzle[] = ALL_RAW.map(decodePuzzle).filter(
+  (p): p is MasyuPuzzle => p !== null,
+)
 
 /** 参考解：只保留“连线”的边，其余留空（显示解时画面干净） */
 export function getReferenceSolution(id: string): GameState | null {
-  const raw = (RAW_PUZZLES as RawPuzzle[]).find((p) => p.id === id)
+  const raw = ALL_RAW.find((p) => p.id === id)
   if (!raw || typeof raw.solution !== 'string' || !raw.solution) return null
   const puzzle = decodePuzzle(raw)
   if (!puzzle) return null
