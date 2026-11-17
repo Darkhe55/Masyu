@@ -8,10 +8,14 @@
  *   规则 2 度数：每格只能没有线或者正好两条线；
  *   规则 3 邻格：白圈两侧至少一侧转弯；黑圈两侧都必须直行；
  *   规则 4 回路：不能提前闭合、闭合后其余位置只能留空、不能出现分叉；
- *   规则 5 反证：某条边「连上」或「不连」会让局部规则直接矛盾，则该边必为另一值。
+ *   规则 5 反证：某条边「连上」或「不连」会让局部规则直接矛盾，则该边必为另一值；
+ *   规则 6 邻格直行：黑圈一旦某方向必然连通，该邻格就必须直行（直通边连上、垂直边断开）；
+ *   规则 7 邻格转弯：白圈两轴邻格里只有一个还能转弯时，它必须转弯（直行边断开，垂直边只剩一条可走时连上）。
  *
+ * 规则 6 / 7 是标准的 Masyu 邻格定式，只依赖「掩码 + 棋盘」即可证明，不猜答案；
  * 规则 5 是标准的「失败文字探测」：它不猜答案，只是把假设代入规则系统，
  * 由矛盾反推出必然结论，所以仍然是严格的逻辑推导（用于内置题「逻辑推完」）。
+ * 规则 1~7 全部是安全局部规则，搜索器（solver.ts）只作为最后兜底。
  */
 
 import {
@@ -69,6 +73,22 @@ export const RULE_DEGREE = 2
 export const RULE_NEIGHBOR = 3
 export const RULE_LOOP = 4
 export const RULE_PROBE = 5
+/** 黑圈邻格必直行（安全局部定式） */
+export const RULE_NEIGHBOR_STRAIGHT = 6
+/** 白圈唯一可转弯邻格必转弯（安全局部定式） */
+export const RULE_NEIGHBOR_TURN = 7
+
+/** 规则名（回放状态栏 / README 共用；9 = 求解器兜底） */
+export const RULE_NAMES: Readonly<Record<number, string>> = {
+  [RULE_CIRCLE]: '圆圈直行/转弯',
+  [RULE_DEGREE]: '度数',
+  [RULE_NEIGHBOR]: '邻格',
+  [RULE_LOOP]: '回路',
+  [RULE_PROBE]: '反证',
+  [RULE_NEIGHBOR_STRAIGHT]: '黑圈邻格直行',
+  [RULE_NEIGHBOR_TURN]: '白圈邻格转弯',
+  9: '回溯补全',
+}
 
 const DIR_NAMES = ['上', '右', '下', '左'] as const
 
@@ -168,6 +188,163 @@ function computeMasks(
     }
   }
   return true
+}
+
+/* ────────────────────────── 邻格定式（安全局部规则） ────────────────────────── */
+
+/** 掩码里「所有」连法都包含的方向位，即这些方向一定连上 */
+function guaranteedDirs(mask: number): number {
+  let out = 0
+  for (let d = 0; d < 4; d++) {
+    let all = true
+    for (let ci = 0; ci < CONFIG_MASKS.length; ci++) {
+      if (!(mask & (1 << ci))) continue
+      if (!(CONFIG_MASKS[ci]! & DIR_BITS[d]!)) {
+        all = false
+        break
+      }
+    }
+    if (all) out |= DIR_BITS[d]!
+  }
+  return out
+}
+
+/** 与方向 d 垂直的两个方向下标 */
+function perpendicularDirs(d: number): [number, number] {
+  return d === 0 || d === 2 ? [1, 3] : [0, 2]
+}
+
+interface PatternResult {
+  changed: boolean
+  contradiction: string | null
+}
+
+/**
+ * 邻格定式（规则 6 / 7）—— 只在掩码已经能证明方向时才落子，不猜答案：
+ *   规则 6：黑圈沿方向 d 必然连通 ⇒ 该侧邻格必须直行（同轴贯通边连上、垂直两边断开）；
+ *   规则 7：白圈轴已确定、两侧邻格里只有一个还能转弯 ⇒ 它必须转弯
+ *           （直行方向断开；若垂直方向只剩一条可走就把它连上，否则把多余的一条断开）。
+ */
+function applyPatternRules(
+  puzzle: MasyuPuzzle,
+  topo: Topology,
+  masks: Uint8Array,
+  edges: Int8Array,
+  record: boolean,
+  deductions: Deduction[],
+): PatternResult {
+  const { cellCount, cellEdge, cellNeighbor } = topo
+  let changed = false
+  let contradiction: string | null = null
+
+  const force = (e: number, to: number, rule: number, label: string): void => {
+    if (contradiction || e < 0) return
+    const from = edges[e]!
+    if (from === to) return
+    if (from !== EDGE_UNKNOWN) {
+      contradiction = `邻格定式与已有结论冲突：${label}`
+      return
+    }
+    edges[e] = to
+    if (record) deductions.push({ edge: e, from, to, rule, label })
+    changed = true
+  }
+
+  for (let cell = 0; cell < cellCount && !contradiction; cell++) {
+    const circle = puzzle.circles[cell] ?? 0
+    if (circle !== CIRCLE_WHITE && circle !== CIRCLE_BLACK) continue
+    const g = guaranteedDirs(masks[cell]!)
+    if (g === 0) continue
+
+    if (circle === CIRCLE_BLACK) {
+      for (let d = 0; d < 4 && !contradiction; d++) {
+        if (!(g & DIR_BITS[d]!)) continue
+        const nb = cellNeighbor[cell * 4 + d]!
+        if (nb < 0) {
+          contradiction = '黑圈的方向掩码与棋盘边界冲突'
+          break
+        }
+        const incoming = OPPOSITE_DIR[d]!
+        if ((masks[nb]! & STRAIGHT_BITS & CONFIG_HAS_DIR[incoming]!) === 0) {
+          contradiction = '黑圈的邻格无法直行'
+          break
+        }
+        const pos = cellLabel(puzzle, nb)
+        force(
+          cellEdge[nb * 4 + d]!,
+          EDGE_ON,
+          RULE_NEIGHBOR_STRAIGHT,
+          `黑圈邻格：${pos} 必须直行，${DIR_NAMES[d]}侧必须连线`,
+        )
+        for (const p of perpendicularDirs(d)) {
+          force(
+            cellEdge[nb * 4 + p]!,
+            EDGE_OFF,
+            RULE_NEIGHBOR_STRAIGHT,
+            `黑圈邻格：${pos} 必须直行，${DIR_NAMES[p]}侧不能连线`,
+          )
+        }
+      }
+      continue
+    }
+
+    // 白圈：只有掩码剩一种直行连法时轴才确定，即保证方向恰好是一对对向
+    const dirs: number[] = []
+    for (let d = 0; d < 4; d++) if (g & DIR_BITS[d]!) dirs.push(d)
+    if (dirs.length !== 2) continue
+
+    const turnable: number[] = []
+    for (const d of dirs) {
+      const nb = cellNeighbor[cell * 4 + d]!
+      if (nb < 0) continue
+      const incoming = OPPOSITE_DIR[d]!
+      if ((masks[nb]! & TURN_BITS & CONFIG_HAS_DIR[incoming]!) !== 0) turnable.push(d)
+    }
+    if (turnable.length === 0) {
+      contradiction = '白圈两侧都无法转弯'
+      break
+    }
+    if (turnable.length !== 1) continue
+
+    const d = turnable[0]!
+    const nb = cellNeighbor[cell * 4 + d]!
+    const pos = cellLabel(puzzle, nb)
+    force(
+      cellEdge[nb * 4 + d]!,
+      EDGE_OFF,
+      RULE_NEIGHBOR_TURN,
+      `白圈邻格：${pos} 必须转弯（另一侧邻格转不了），${DIR_NAMES[d]}侧不能直行`,
+    )
+    const perpEdges: number[] = []
+    for (const p of perpendicularDirs(d)) {
+      const e = cellEdge[nb * 4 + p]!
+      if (e >= 0) perpEdges.push(e)
+    }
+    let onCount = 0
+    const unknown: number[] = []
+    for (const e of perpEdges) {
+      if (edges[e] === EDGE_ON) onCount++
+      else if (edges[e] === EDGE_UNKNOWN) unknown.push(e)
+    }
+    if (onCount >= 2) {
+      contradiction = '邻格必须转弯，但已经连出两条垂直的线'
+      break
+    }
+    if (onCount === 0 && perpEdges.length === 1) {
+      force(
+        perpEdges[0]!,
+        EDGE_ON,
+        RULE_NEIGHBOR_TURN,
+        `白圈邻格：${pos} 必须转弯，垂直方向只有这一侧可走`,
+      )
+    } else if (onCount === 1) {
+      for (const e of unknown) {
+        force(e, EDGE_OFF, RULE_NEIGHBOR_TURN, `白圈邻格：${pos} 已经转弯，另一条垂直边不能连线`)
+      }
+    }
+  }
+
+  return { changed, contradiction }
 }
 
 /* ────────────────────────── 全局回路约束 ────────────────────────── */
@@ -270,7 +447,11 @@ function applyLoopRules(
     if (parent[a] === -1 || parent[b] === -1) continue
     if (componentRoot(parent, a) !== componentRoot(parent, b)) continue
     const info = infos.get(componentRoot(parent, a))!
-    const validClose = info.endpoints === 2 && degree[a] === 1 && degree[b] === 1
+    const validClose =
+      info.endpoints === 2 &&
+      degree[a] === 1 &&
+      degree[b] === 1 &&
+      info.circles === totalCircles
     if (!validClose) {
       if (setEdge(e, EDGE_OFF)) changed = true
     }
@@ -370,6 +551,16 @@ function localFixpoint(ctx: LocalContext, maxSteps: number): LocalResult {
       }
     }
     if (changed) {
+      steps++
+      continue
+    }
+
+    // 邻格定式（规则 6 / 7）：只在掩码能证明方向时落子
+    const patternResult = applyPatternRules(puzzle, topo, masks, edges, ctx.record, ctx.deductions)
+    if (patternResult.contradiction) {
+      return { ok: false, solved: false, contradiction: patternResult.contradiction, steps }
+    }
+    if (patternResult.changed) {
       steps++
       continue
     }

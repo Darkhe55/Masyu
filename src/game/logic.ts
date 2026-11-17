@@ -5,13 +5,15 @@
  * 相位 2：框架逐帧回放（core/playback.ts）。
  *
  * 回放只画「连上的线」：规则推导出的大量“排除”不占帧，画面更干净；
+ * 规则 1~4 是基础约束、6/7 是邻格定式（黑圈邻格直行 / 白圈唯一可转弯邻格必转弯），
+ * 都只做可证明的安全推理；规则 5 反证只在这些规则推不动时兜底。
  * 如果玩家盘面上有画错的线（传播出矛盾），或规则推不满，
- * 就用求解器补全，并把剩下的连线作为「回溯补全」帧。
+ * 就用求解器补全，并把剩下的连线作为「回溯补全」帧（规则 9）。
  */
 
 import type { GameState, LogicPlan, PlaybackFrame, Puzzle } from '../core/types.ts'
 import { asMasyuPuzzle, asMasyuState, EDGE_ON, EDGE_UNKNOWN, type MasyuState } from './types.ts'
-import { propagate } from './rules.ts'
+import { propagate, RULE_NAMES } from './rules.ts'
 import { solvePuzzle } from './solver.ts'
 
 const RULE_SEARCH = 9
@@ -26,7 +28,7 @@ export function planLogicSolve(puzzle: Puzzle, state: GameState): LogicPlan {
   const push = (edge: number, from: number, to: number, rule: number, label: string): void => {
     if (from === to) return
     streak++
-    frames.push({ rule, label, move: { index: edge, from, to }, streak })
+    frames.push({ rule, ruleName: RULE_NAMES[rule] ?? '', label, move: { index: edge, from, to }, streak })
     result[edge] = to
   }
 
